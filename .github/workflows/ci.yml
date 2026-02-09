@@ -109,14 +109,21 @@ jobs:
       fail-fast: false
       matrix:
         platform:
-          - name: macOS
+          - name: macOS (Apple Silicon)
             os: macos-latest
+            cache_key: macos-arm64
             build_command: npm run tauri -- build --debug --no-bundle
+          - name: macOS (Intel)
+            os: macos-13
+            cache_key: macos-x86_64
+            build_command: npm run tauri -- build --debug --no-bundle --target x86_64-apple-darwin
           - name: Linux
             os: ubuntu-latest
+            cache_key: linux
             build_command: npm run tauri -- build --debug --no-bundle
           - name: Windows
             os: windows-latest
+            cache_key: windows
             build_command: npm run tauri -- build --debug --no-bundle --config src-tauri/tauri.windows.conf.json
     steps:
       - uses: actions/checkout@v4
@@ -132,9 +139,9 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: ${{ runner.os }}-cargo-build-${{ hashFiles('src-tauri/Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.platform.cache_key }}-cargo-build-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: |
-            ${{ runner.os }}-cargo-build-
+            ${{ runner.os }}-${{ matrix.platform.cache_key }}-cargo-build-
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: command -v cmake >/dev/null 2>&1 || brew install cmake

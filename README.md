@@ -181,6 +181,23 @@ npm run tauri:build
 
 Artifacts will be in `src-tauri/target/release/bundle/` (platform-specific subfolders).
 
+### macOS Intel Build (x86_64)
+
+If you are building on Apple Silicon and need an Intel macOS artifact:
+
+```bash
+rustup target add x86_64-apple-darwin
+npm run tauri:build:mac:intel
+```
+
+Artifacts will be in `src-tauri/target/x86_64-apple-darwin/release/bundle/`.
+
+For PR validation without generating installer bundles:
+
+```bash
+npm run tauri:check:mac:intel
+```
+
 ### Windows (opt-in)
 
 Windows builds are opt-in and use a separate Tauri config file to avoid macOS-only window effects.
