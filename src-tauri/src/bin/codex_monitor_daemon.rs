@@ -80,8 +80,8 @@ use backend::events::{AppServerEvent, EventSink, TerminalExit, TerminalOutput};
 use shared::codex_core::CodexLoginCancelState;
 use shared::prompts_core::{self, CustomPromptEntry};
 use shared::{
-    codex_aux_core, codex_core, files_core, git_core, git_ui_core, local_usage_core, settings_core,
-    workspaces_core, worktree_core,
+    agents_config_core, codex_aux_core, codex_core, files_core, git_core, git_ui_core,
+    local_usage_core, settings_core, workspaces_core, worktree_core,
 };
 use storage::{read_settings, read_workspaces};
 use types::{
@@ -511,6 +511,50 @@ impl DaemonState {
         codex_config::write_feature_enabled(feature_key.as_str(), enabled)
     }
 
+    async fn get_agents_settings(&self) -> Result<agents_config_core::AgentsSettingsDto, String> {
+        agents_config_core::get_agents_settings_core()
+    }
+
+    async fn set_agents_core_settings(
+        &self,
+        input: agents_config_core::SetAgentsCoreInput,
+    ) -> Result<agents_config_core::AgentsSettingsDto, String> {
+        agents_config_core::set_agents_core_settings_core(input)
+    }
+
+    async fn create_agent(
+        &self,
+        input: agents_config_core::CreateAgentInput,
+    ) -> Result<agents_config_core::AgentsSettingsDto, String> {
+        agents_config_core::create_agent_core(input)
+    }
+
+    async fn update_agent(
+        &self,
+        input: agents_config_core::UpdateAgentInput,
+    ) -> Result<agents_config_core::AgentsSettingsDto, String> {
+        agents_config_core::update_agent_core(input)
+    }
+
+    async fn delete_agent(
+        &self,
+        input: agents_config_core::DeleteAgentInput,
+    ) -> Result<agents_config_core::AgentsSettingsDto, String> {
+        agents_config_core::delete_agent_core(input)
+    }
+
+    async fn read_agent_config_toml(&self, agent_name: String) -> Result<String, String> {
+        agents_config_core::read_agent_config_toml_core(agent_name.as_str())
+    }
+
+    async fn write_agent_config_toml(
+        &self,
+        agent_name: String,
+        content: String,
+    ) -> Result<(), String> {
+        agents_config_core::write_agent_config_toml_core(agent_name.as_str(), content.as_str())
+    }
+
     async fn list_workspace_files(&self, workspace_id: String) -> Result<Vec<String>, String> {
         workspaces_core::list_workspace_files_core(&self.workspaces, &workspace_id, |root| {
             list_workspace_files_inner(root, 20000)
@@ -627,8 +671,10 @@ impl DaemonState {
         cursor: Option<String>,
         limit: Option<u32>,
         sort_key: Option<String>,
+        cwd: Option<String>,
     ) -> Result<Value, String> {
-        codex_core::list_threads_core(&self.sessions, workspace_id, cursor, limit, sort_key).await
+        codex_core::list_threads_core(&self.sessions, workspace_id, cursor, limit, sort_key, cwd)
+            .await
     }
 
     async fn list_mcp_server_status(
@@ -1148,6 +1194,22 @@ impl DaemonState {
             &self.sessions,
             workspace_id,
             &prompt,
+            |workspace_id, thread_id| {
+                emit_background_thread_hide(&self.event_sink, workspace_id, thread_id);
+            },
+        )
+        .await
+    }
+
+    async fn generate_agent_description(
+        &self,
+        workspace_id: String,
+        description: String,
+    ) -> Result<codex_aux_core::GeneratedAgentConfiguration, String> {
+        codex_aux_core::generate_agent_description_core(
+            &self.sessions,
+            workspace_id,
+            &description,
             |workspace_id, thread_id| {
                 emit_background_thread_hide(&self.event_sink, workspace_id, thread_id);
             },
