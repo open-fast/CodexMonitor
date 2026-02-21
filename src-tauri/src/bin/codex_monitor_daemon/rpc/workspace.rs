@@ -59,6 +59,32 @@ pub(super) async fn try_handle(
             };
             Some(serde_json::to_value(workspace).map_err(|err| err.to_string()))
         }
+        "add_workspace_from_git_url" => {
+            let url = match parse_string(params, "url") {
+                Ok(value) => value,
+                Err(err) => return Some(Err(err)),
+            };
+            let destination_path = match parse_string(params, "destination_path") {
+                Ok(value) => value,
+                Err(err) => return Some(Err(err)),
+            };
+            let target_folder_name = parse_optional_string(params, "target_folder_name");
+            let codex_bin = parse_optional_string(params, "codex_bin");
+            let workspace = match state
+                .add_workspace_from_git_url(
+                    url,
+                    destination_path,
+                    target_folder_name,
+                    codex_bin,
+                    client_version.to_string(),
+                )
+                .await
+            {
+                Ok(value) => value,
+                Err(err) => return Some(Err(err)),
+            };
+            Some(serde_json::to_value(workspace).map_err(|err| err.to_string()))
+        }
         "add_worktree" => {
             let parent_id = match parse_string(params, "parentId") {
                 Ok(value) => value,
@@ -118,6 +144,23 @@ pub(super) async fn try_handle(
                     .connect_workspace(id, client_version.to_string())
                     .await
                     .map(|_| json!({ "ok": true })),
+            )
+        }
+        "set_workspace_runtime_codex_args" => {
+            let workspace_id = match parse_string(params, "workspaceId") {
+                Ok(value) => value,
+                Err(err) => return Some(Err(err)),
+            };
+            let codex_args = parse_optional_string(params, "codexArgs");
+            Some(
+                state
+                    .set_workspace_runtime_codex_args(
+                        workspace_id,
+                        codex_args,
+                        client_version.to_string(),
+                    )
+                    .await
+                    .and_then(|value| serde_json::to_value(value).map_err(|e| e.to_string())),
             )
         }
         "remove_workspace" => {

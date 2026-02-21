@@ -77,6 +77,35 @@ pub(crate) async fn list_workspaces(
 }
 
 #[tauri::command]
+pub(crate) async fn set_workspace_runtime_codex_args(
+    workspace_id: String,
+    codex_args: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<workspaces_core::WorkspaceRuntimeCodexArgsResult, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "set_workspace_runtime_codex_args",
+            json!({ "workspaceId": workspace_id, "codexArgs": codex_args }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|err| err.to_string());
+    }
+
+    workspaces_core::set_workspace_runtime_codex_args_core(
+        workspace_id,
+        codex_args,
+        &state.workspaces,
+        &state.sessions,
+        &state.app_settings,
+        |entry, default_bin, args, home| spawn_with_app(&app, entry, default_bin, args, home),
+    )
+    .await
+}
+
+#[tauri::command]
 pub(crate) async fn is_workspace_path_dir(
     path: String,
     state: State<'_, AppState>,
@@ -117,6 +146,49 @@ pub(crate) async fn add_workspace(
 
     workspaces_core::add_workspace_core(
         path,
+        codex_bin,
+        &state.workspaces,
+        &state.sessions,
+        &state.app_settings,
+        &state.storage_path,
+        |entry, default_bin, codex_args, codex_home| {
+            spawn_with_app(&app, entry, default_bin, codex_args, codex_home)
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub(crate) async fn add_workspace_from_git_url(
+    url: String,
+    destination_path: String,
+    target_folder_name: Option<String>,
+    codex_bin: Option<String>,
+    state: State<'_, AppState>,
+    app: AppHandle,
+) -> Result<WorkspaceInfo, String> {
+    if remote_backend::is_remote_mode(&*state).await {
+        let destination_path = remote_backend::normalize_path_for_remote(destination_path);
+        let codex_bin = codex_bin.map(remote_backend::normalize_path_for_remote);
+        let response = remote_backend::call_remote(
+            &*state,
+            app,
+            "add_workspace_from_git_url",
+            json!({
+                "url": url,
+                "destination_path": destination_path,
+                "target_folder_name": target_folder_name,
+                "codex_bin": codex_bin
+            }),
+        )
+        .await?;
+        return serde_json::from_value(response).map_err(|err| err.to_string());
+    }
+
+    workspaces_core::add_workspace_from_git_url_core(
+        url,
+        destination_path,
+        target_folder_name,
         codex_bin,
         &state.workspaces,
         &state.sessions,

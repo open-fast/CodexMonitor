@@ -116,7 +116,7 @@ const baseSettings: AppSettings = {
   preloadGitDiffs: true,
   gitDiffIgnoreWhitespaceChanges: false,
   commitMessagePrompt: DEFAULT_COMMIT_MESSAGE_PROMPT,
-  experimentalCollabEnabled: false,
+  commitMessageModelId: null,
   collaborationModesEnabled: true,
   steerEnabled: true,
   pauseQueuedMessagesWhenResponseRequired: true,

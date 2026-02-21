@@ -8,9 +8,11 @@ import type {
   WorkspaceSettings,
 } from "../../../types";
 import { ask, message } from "@tauri-apps/plugin-dialog";
+import { isMobilePlatform } from "../../../utils/platformPaths";
 import {
   addClone as addCloneService,
   addWorkspace as addWorkspaceService,
+  addWorkspaceFromGitUrl as addWorkspaceFromGitUrlService,
   addWorktree as addWorktreeService,
   connectWorkspace as connectWorkspaceService,
   isWorkspacePathDir as isWorkspacePathDirService,
@@ -76,6 +78,26 @@ function createGroupId() {
 
 function normalizeWorkspacePathKey(value: string) {
   return value.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function parseWorkspacePathInput(value: string) {
+  return value
+    .split(/\r?\n|,|;/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function promptWorkspacePathsForMobileRemote(): string[] {
+  if (typeof window === "undefined" || typeof window.prompt !== "function") {
+    return [];
+  }
+  const input = window.prompt(
+    "Enter one or more project paths on the connected server.\nUse one path per line (or comma-separated).",
+  );
+  if (!input) {
+    return [];
+  }
+  return parseWorkspacePathInput(input);
 }
 
 export function useWorkspaces(options: UseWorkspacesOptions = {}) {
@@ -264,6 +286,61 @@ export function useWorkspaces(options: UseWorkspacesOptions = {}) {
     [defaultCodexBin, onDebug],
   );
 
+
+  const addWorkspaceFromGitUrl = useCallback(
+    async (
+      url: string,
+      destinationPath: string,
+      targetFolderName?: string | null,
+      options?: { activate?: boolean },
+    ) => {
+      const trimmedUrl = url.trim();
+      const trimmedDestination = destinationPath.trim();
+      const trimmedFolderName = targetFolderName?.trim() || null;
+      if (!trimmedUrl) {
+        throw new Error("Remote Git URL is required.");
+      }
+      if (!trimmedDestination) {
+        throw new Error("Destination folder is required.");
+      }
+      const shouldActivate = options?.activate !== false;
+      onDebug?.({
+        id: `${Date.now()}-client-add-workspace-from-url`,
+        timestamp: Date.now(),
+        source: "client",
+        label: "workspace/add-from-url",
+        payload: {
+          url: trimmedUrl,
+          destinationPath: trimmedDestination,
+          targetFolderName: trimmedFolderName,
+        },
+      });
+      try {
+        const workspace = await addWorkspaceFromGitUrlService(
+          trimmedUrl,
+          trimmedDestination,
+          trimmedFolderName,
+          defaultCodexBin ?? null,
+        );
+        setWorkspaces((prev) => [...prev, workspace]);
+        if (shouldActivate) {
+          setActiveWorkspaceId(workspace.id);
+        }
+        return workspace;
+      } catch (error) {
+        onDebug?.({
+          id: `${Date.now()}-client-add-workspace-from-url-error`,
+          timestamp: Date.now(),
+          source: "error",
+          label: "workspace/add-from-url error",
+          payload: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    },
+    [defaultCodexBin, onDebug],
+  );
+
   const addWorkspacesFromPaths = useCallback(
     async (paths: string[]) => {
       const existingPaths = new Set(
@@ -377,12 +454,20 @@ export function useWorkspaces(options: UseWorkspacesOptions = {}) {
   );
 
   const addWorkspace = useCallback(async () => {
+    if (isMobilePlatform() && appSettings?.backendMode === "remote") {
+      const manualPaths = promptWorkspacePathsForMobileRemote();
+      if (manualPaths.length === 0) {
+        return null;
+      }
+      return addWorkspacesFromPaths(manualPaths);
+    }
+
     const selection = await pickWorkspacePaths();
     if (selection.length === 0) {
       return null;
     }
     return addWorkspacesFromPaths(selection);
-  }, [addWorkspacesFromPaths]);
+  }, [addWorkspacesFromPaths, appSettings?.backendMode]);
 
   const filterWorkspacePaths = useCallback(async (paths: string[]) => {
     const trimmed = paths.map((path) => path.trim()).filter(Boolean);
@@ -993,6 +1078,7 @@ export function useWorkspaces(options: UseWorkspacesOptions = {}) {
     setActiveWorkspaceId,
     addWorkspace,
     addWorkspaceFromPath,
+    addWorkspaceFromGitUrl,
     addWorkspacesFromPaths,
     filterWorkspacePaths,
     addCloneAgent,

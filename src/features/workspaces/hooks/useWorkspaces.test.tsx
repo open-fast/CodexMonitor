@@ -5,6 +5,7 @@ import { message } from "@tauri-apps/plugin-dialog";
 import type { WorkspaceInfo } from "../../../types";
 import {
   addWorkspace,
+  addWorkspaceFromGitUrl,
   connectWorkspace as connectWorkspaceService,
   isWorkspacePathDir,
   listWorkspaces,
@@ -13,6 +14,7 @@ import {
   renameWorktreeUpstream,
   updateWorkspaceSettings,
 } from "../../../services/tauri";
+import { isMobilePlatform } from "../../../utils/platformPaths";
 import { useWorkspaces } from "./useWorkspaces";
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -26,6 +28,7 @@ vi.mock("../../../services/tauri", () => ({
   renameWorktreeUpstream: vi.fn(),
   addClone: vi.fn(),
   addWorkspace: vi.fn(),
+  addWorkspaceFromGitUrl: vi.fn(),
   addWorktree: vi.fn(),
   connectWorkspace: vi.fn(),
   isWorkspacePathDir: vi.fn(),
@@ -36,8 +39,13 @@ vi.mock("../../../services/tauri", () => ({
   updateWorkspaceSettings: vi.fn(),
 }));
 
+vi.mock("../../../utils/platformPaths", () => ({
+  isMobilePlatform: vi.fn(() => false),
+}));
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(isMobilePlatform).mockReturnValue(false);
 });
 
 const worktree: WorkspaceInfo = {
@@ -358,5 +366,75 @@ describe("useWorkspaces.addWorkspace (bulk)", () => {
     expect(options).toEqual(
       expect.objectContaining({ title: "Some workspaces were skipped", kind: "warning" }),
     );
+  });
+
+  it("uses manual server paths on mobile remote mode", async () => {
+    const listWorkspacesMock = vi.mocked(listWorkspaces);
+    const pickWorkspacePathsMock = vi.mocked(pickWorkspacePaths);
+    const isWorkspacePathDirMock = vi.mocked(isWorkspacePathDir);
+    const addWorkspaceMock = vi.mocked(addWorkspace);
+    const promptSpy = vi
+      .spyOn(window, "prompt")
+      .mockReturnValue("/srv/repo-a\n/srv/repo-b");
+    vi.mocked(isMobilePlatform).mockReturnValue(true);
+
+    listWorkspacesMock.mockResolvedValue([]);
+    isWorkspacePathDirMock.mockResolvedValue(true);
+    addWorkspaceMock
+      .mockResolvedValueOnce({ ...workspaceOne, id: "added-1", path: "/srv/repo-a" })
+      .mockResolvedValueOnce({ ...workspaceTwo, id: "added-2", path: "/srv/repo-b" });
+
+    const { result } = renderHook(() =>
+      useWorkspaces({
+        appSettings: { backendMode: "remote" } as never,
+      }),
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await result.current.addWorkspace();
+    });
+
+    expect(promptSpy).toHaveBeenCalledTimes(1);
+    expect(pickWorkspacePathsMock).not.toHaveBeenCalled();
+    expect(addWorkspaceMock).toHaveBeenCalledTimes(2);
+    expect(addWorkspaceMock).toHaveBeenNthCalledWith(1, "/srv/repo-a", null);
+    expect(addWorkspaceMock).toHaveBeenNthCalledWith(2, "/srv/repo-b", null);
+
+    promptSpy.mockRestore();
+  });
+});
+
+
+describe("useWorkspaces.addWorkspaceFromGitUrl", () => {
+  it("invokes service and activates workspace", async () => {
+    vi.mocked(listWorkspaces).mockResolvedValue([]);
+    const added = { ...workspaceOne, id: "from-url", path: "/tmp/from-url" };
+    vi.mocked(addWorkspaceFromGitUrl).mockResolvedValue(added);
+
+    const { result } = renderHook(() => useWorkspaces());
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await result.current.addWorkspaceFromGitUrl(
+        "https://github.com/org/repo.git",
+        "/tmp",
+        "repo",
+      );
+    });
+
+    expect(addWorkspaceFromGitUrl).toHaveBeenCalledWith(
+      "https://github.com/org/repo.git",
+      "/tmp",
+      "repo",
+      null,
+    );
+    expect(result.current.activeWorkspace?.id).toBe("from-url");
   });
 });

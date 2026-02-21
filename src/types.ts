@@ -226,7 +226,7 @@ export type AppSettings = {
   preloadGitDiffs: boolean;
   gitDiffIgnoreWhitespaceChanges: boolean;
   commitMessagePrompt: string;
-  experimentalCollabEnabled: boolean;
+  commitMessageModelId: string | null;
   collaborationModesEnabled: boolean;
   steerEnabled: boolean;
   pauseQueuedMessagesWhenResponseRequired: boolean;
