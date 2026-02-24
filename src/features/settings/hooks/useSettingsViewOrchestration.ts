@@ -42,7 +42,6 @@ type UseSettingsViewOrchestrationArgs = {
     codexBin: string | null,
     codexArgs: string | null,
   ) => Promise<CodexUpdateResult>;
-  onUpdateWorkspaceCodexBin: (id: string, codexBin: string | null) => Promise<void>;
   onUpdateWorkspaceSettings: (
     id: string,
     settings: Partial<WorkspaceSettings>,
@@ -79,7 +78,6 @@ export function useSettingsViewOrchestration({
   onUpdateAppSettings,
   onRunDoctor,
   onRunCodexUpdate,
-  onUpdateWorkspaceCodexBin,
   onUpdateWorkspaceSettings,
   scaleShortcutTitle,
   scaleShortcutText,
@@ -106,10 +104,6 @@ export function useSettingsViewOrchestration({
     () => projects.filter((workspace) => (workspace.kind ?? "main") !== "worktree"),
     [projects],
   );
-  const hasCodexHomeOverrides = useMemo(
-    () => projects.some((workspace) => workspace.settings.codexHome != null),
-    [projects],
-  );
   const featureWorkspaceId = useMemo(
     () => projects.find((workspace) => workspace.connected)?.id ?? null,
     [projects],
@@ -121,6 +115,9 @@ export function useSettingsViewOrchestration({
     : isWindowsPlatform()
       ? "Windows"
       : "Meta";
+  const followUpShortcutLabel = isMacPlatform()
+    ? "Shift+Cmd+Enter"
+    : "Shift+Ctrl+Enter";
 
   const selectedDictationModel = useMemo(() => {
     return (
@@ -197,8 +194,6 @@ export function useSettingsViewOrchestration({
     onUpdateAppSettings,
     onRunDoctor,
     onRunCodexUpdate,
-    onUpdateWorkspaceCodexBin,
-    onUpdateWorkspaceSettings,
   });
 
   const gitSectionProps = useSettingsGitSection({
@@ -210,7 +205,6 @@ export function useSettingsViewOrchestration({
   const featuresSectionProps = useSettingsFeaturesSection({
     appSettings,
     featureWorkspaceId,
-    hasCodexHomeOverrides,
     onUpdateAppSettings,
   });
 
@@ -223,6 +217,7 @@ export function useSettingsViewOrchestration({
     composerSectionProps: {
       appSettings,
       optionKeyLabel,
+      followUpShortcutLabel,
       composerPresetLabels: COMPOSER_PRESET_LABELS,
       onComposerPresetChange: (
         preset: AppSettings["composerEditorPreset"],

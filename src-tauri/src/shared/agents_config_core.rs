@@ -8,12 +8,19 @@ use crate::codex::home as codex_home;
 use crate::shared::config_toml_core;
 
 pub(crate) const DEFAULT_AGENT_MAX_THREADS: u32 = 6;
+pub(crate) const DEFAULT_AGENT_MAX_DEPTH: u32 = 1;
 const MIN_AGENT_MAX_THREADS: u32 = 1;
 const MAX_AGENT_MAX_THREADS: u32 = 12;
+const MIN_AGENT_MAX_DEPTH: u32 = 1;
+const MAX_AGENT_MAX_DEPTH: u32 = 4;
 const MANAGED_AGENTS_DIR: &str = "agents";
 const TEMPLATE_BLANK: &str = "blank";
 const DEFAULT_AGENT_MODEL: &str = "gpt-5-codex";
 const DEFAULT_REASONING_EFFORT: &str = "medium";
+
+const fn default_agent_max_depth() -> u32 {
+    DEFAULT_AGENT_MAX_DEPTH
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -33,6 +40,7 @@ pub(crate) struct AgentsSettingsDto {
     pub config_path: String,
     pub multi_agent_enabled: bool,
     pub max_threads: u32,
+    pub max_depth: u32,
     pub agents: Vec<AgentSummaryDto>,
 }
 
@@ -41,6 +49,8 @@ pub(crate) struct AgentsSettingsDto {
 pub(crate) struct SetAgentsCoreInput {
     pub multi_agent_enabled: bool,
     pub max_threads: u32,
+    #[serde(default = "default_agent_max_depth")]
+    pub max_depth: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -82,6 +92,7 @@ pub(crate) fn get_agents_settings_core() -> Result<AgentsSettingsDto, String> {
     let (_, document) = config_toml_core::load_global_config_document(&codex_home)?;
     let multi_agent_enabled = read_multi_agent_enabled(&document);
     let max_threads = read_max_threads(&document);
+    let max_depth = read_max_depth(&document);
     let mut agents = collect_agents(&codex_home, &document);
     agents.sort_by(|left, right| left.name.cmp(&right.name));
 
@@ -89,6 +100,7 @@ pub(crate) fn get_agents_settings_core() -> Result<AgentsSettingsDto, String> {
         config_path: config_path_string,
         multi_agent_enabled,
         max_threads,
+        max_depth,
         agents,
     })
 }
@@ -97,6 +109,7 @@ pub(crate) fn set_agents_core_settings_core(
     input: SetAgentsCoreInput,
 ) -> Result<AgentsSettingsDto, String> {
     validate_max_threads(input.max_threads)?;
+    validate_max_depth(input.max_depth)?;
 
     let codex_home = resolve_codex_home()?;
     let (_, mut document) = config_toml_core::load_global_config_document(&codex_home)?;
@@ -106,6 +119,7 @@ pub(crate) fn set_agents_core_settings_core(
 
     let agents = config_toml_core::ensure_table(&mut document, "agents")?;
     agents["max_threads"] = value(input.max_threads as i64);
+    agents["max_depth"] = value(input.max_depth as i64);
 
     config_toml_core::persist_global_config_document(&codex_home, &document)?;
     get_agents_settings_core()
@@ -193,10 +207,14 @@ pub(crate) fn update_agent_core(input: UpdateAgentInput) -> Result<AgentsSetting
                 if let Some(old_relative_path) = managed_relative_path_from_config(old_value) {
                     let new_relative_path = managed_relative_config_for_name(&name);
                     if old_relative_path != new_relative_path {
-                        let old_abs_path =
-                            resolve_safe_managed_abs_path_for_read(&codex_home, &old_relative_path)?;
-                        let new_abs_path =
-                            resolve_safe_managed_abs_path_for_write(&codex_home, &new_relative_path)?;
+                        let old_abs_path = resolve_safe_managed_abs_path_for_read(
+                            &codex_home,
+                            &old_relative_path,
+                        )?;
+                        let new_abs_path = resolve_safe_managed_abs_path_for_write(
+                            &codex_home,
+                            &new_relative_path,
+                        )?;
                         if new_abs_path.exists() {
                             return Err(format!(
                                 "target config file already exists: {}",
@@ -316,8 +334,9 @@ pub(crate) fn delete_agent_core(input: DeleteAgentInput) -> Result<AgentsSetting
             if let Some(relative_path) = managed_relative_path_from_config(config_file.as_str()) {
                 let target = resolve_safe_managed_abs_path_for_read(&codex_home, &relative_path)?;
                 if target.exists() {
-                    let backup = std::fs::read(&target)
-                        .map_err(|err| format!("Failed to read agent config file before delete: {err}"))?;
+                    let backup = std::fs::read(&target).map_err(|err| {
+                        format!("Failed to read agent config file before delete: {err}")
+                    })?;
                     std::fs::remove_file(&target)
                         .map_err(|err| format!("Failed to delete agent config file: {err}"))?;
                     deleted_config_backup = Some((target, backup));
@@ -326,7 +345,9 @@ pub(crate) fn delete_agent_core(input: DeleteAgentInput) -> Result<AgentsSetting
         }
     }
 
-    if let Err(persist_error) = config_toml_core::persist_global_config_document(&codex_home, &document) {
+    if let Err(persist_error) =
+        config_toml_core::persist_global_config_document(&codex_home, &document)
+    {
         if let Some((path, backup)) = deleted_config_backup {
             if let Err(restore_error) = std::fs::write(&path, backup) {
                 return Err(format!(
@@ -387,6 +408,22 @@ fn read_max_threads(document: &Document) -> u32 {
         .unwrap_or(DEFAULT_AGENT_MAX_THREADS)
 }
 
+fn read_max_depth(document: &Document) -> u32 {
+    let raw = document
+        .get("agents")
+        .and_then(Item::as_table_like)
+        .and_then(|table| table.get("max_depth"))
+        .and_then(Item::as_integer)
+        .unwrap_or(DEFAULT_AGENT_MAX_DEPTH as i64);
+    if raw < MIN_AGENT_MAX_DEPTH as i64 {
+        return DEFAULT_AGENT_MAX_DEPTH;
+    }
+    u32::try_from(raw)
+        .ok()
+        .filter(|value| *value <= MAX_AGENT_MAX_DEPTH)
+        .unwrap_or(DEFAULT_AGENT_MAX_DEPTH)
+}
+
 fn collect_agents(codex_home: &Path, document: &Document) -> Vec<AgentSummaryDto> {
     let mut result = Vec::new();
     let Some(agents_table) = document.get("agents").and_then(Item::as_table_like) else {
@@ -394,7 +431,7 @@ fn collect_agents(codex_home: &Path, document: &Document) -> Vec<AgentSummaryDto
     };
 
     for (name, item) in agents_table.iter() {
-        if name == "max_threads" {
+        if is_reserved_agents_key(name) || !item.is_table_like() {
             continue;
         }
         let description = read_role_description(item);
@@ -472,6 +509,9 @@ fn normalize_agent_name(raw_name: &str) -> Result<String, String> {
             );
         }
     }
+    if is_reserved_agents_key(name.as_str()) {
+        return Err("agent name is reserved".to_string());
+    }
     Ok(name.to_string())
 }
 
@@ -503,9 +543,27 @@ fn validate_max_threads(value: u32) -> Result<(), String> {
     }
 }
 
+fn validate_max_depth(value: u32) -> Result<(), String> {
+    if (MIN_AGENT_MAX_DEPTH..=MAX_AGENT_MAX_DEPTH).contains(&value) {
+        Ok(())
+    } else {
+        Err(format!(
+            "agents.max_depth must be between {} and {}",
+            MIN_AGENT_MAX_DEPTH, MAX_AGENT_MAX_DEPTH
+        ))
+    }
+}
+
+fn is_reserved_agents_key(name: &str) -> bool {
+    name == "max_threads" || name == "max_depth"
+}
+
 fn has_agent_name_conflict(agents: &Table, name: &str, excluding: Option<&str>) -> bool {
+    if is_reserved_agents_key(name) {
+        return true;
+    }
     agents.iter().any(|(existing_name, item)| {
-        if existing_name == "max_threads" || !item.is_table_like() {
+        if is_reserved_agents_key(existing_name) || !item.is_table_like() {
             return false;
         }
         if let Some(excluding_name) = excluding {
@@ -600,7 +658,9 @@ fn managed_relative_path_from_config(raw_path: &str) -> Option<PathBuf> {
     }
 }
 
-fn resolve_managed_agent_config_relative_path(agent_name: &str) -> Result<(PathBuf, PathBuf), String> {
+fn resolve_managed_agent_config_relative_path(
+    agent_name: &str,
+) -> Result<(PathBuf, PathBuf), String> {
     let name = normalize_agent_lookup_name(agent_name)?;
     let codex_home = resolve_codex_home()?;
     let (_, document) = config_toml_core::load_global_config_document(&codex_home)?;
@@ -803,7 +863,10 @@ mod tests {
     fn normalize_agent_name_accepts_expected_shape() {
         assert_eq!(normalize_agent_name("explorer").expect("valid"), "explorer");
         assert_eq!(normalize_agent_name("a-1_b").expect("valid"), "a-1_b");
-        assert_eq!(normalize_agent_name(" Explorer ").expect("valid"), "explorer");
+        assert_eq!(
+            normalize_agent_name(" Explorer ").expect("valid"),
+            "explorer"
+        );
         assert_eq!(normalize_agent_name("A-1_B").expect("valid"), "a-1_b");
         assert_eq!(
             normalize_agent_name("Hello world").expect("valid"),
@@ -825,13 +888,11 @@ mod tests {
     #[test]
     fn managed_path_detection_accepts_agents_prefix() {
         assert_eq!(
-            managed_relative_path_from_config("./agents/researcher.toml")
-                .expect("managed path"),
+            managed_relative_path_from_config("./agents/researcher.toml").expect("managed path"),
             PathBuf::from("agents/researcher.toml")
         );
         assert_eq!(
-            managed_relative_path_from_config("agents/researcher.toml")
-                .expect("managed path"),
+            managed_relative_path_from_config("agents/researcher.toml").expect("managed path"),
             PathBuf::from("agents/researcher.toml")
         );
     }
@@ -857,10 +918,7 @@ mod tests {
         let mut role = clone_role_table(role_item).expect("clone role");
         role["description"] = value("New");
 
-        assert_eq!(
-            role.get("custom_key").and_then(Item::as_str),
-            Some("keep")
-        );
+        assert_eq!(role.get("custom_key").and_then(Item::as_str), Some("keep"));
         assert_eq!(role.get("description").and_then(Item::as_str), Some("New"));
     }
 
@@ -903,15 +961,54 @@ mod tests {
     }
 
     #[test]
+    fn read_max_depth_uses_default_when_missing() {
+        let document = Document::new();
+        assert_eq!(read_max_depth(&document), DEFAULT_AGENT_MAX_DEPTH);
+    }
+
+    #[test]
+    fn read_max_depth_reads_value_when_present() {
+        let document: Document = "[agents]\nmax_depth = 4\n".parse().expect("parse");
+        assert_eq!(read_max_depth(&document), 4);
+    }
+
+    #[test]
     fn validate_max_threads_enforces_upper_bound() {
         assert!(validate_max_threads(12).is_ok());
         assert!(validate_max_threads(13).is_err());
     }
 
     #[test]
+    fn validate_max_depth_enforces_upper_bound() {
+        assert!(validate_max_depth(4).is_ok());
+        assert!(validate_max_depth(5).is_err());
+    }
+
+    #[test]
+    fn collect_agents_ignores_reserved_keys() {
+        let codex_home = temp_dir("codex-home");
+        let document: Document = r#"
+[agents]
+max_threads = 8
+max_depth = 4
+
+[agents.researcher]
+description = "Research role"
+config_file = "agents/researcher.toml"
+"#
+        .parse()
+        .expect("parse");
+
+        let agents = collect_agents(&codex_home, &document);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].name, "researcher");
+
+        let _ = std::fs::remove_dir_all(codex_home);
+    }
+
+    #[test]
     fn build_template_content_uses_provided_model_and_reasoning() {
-        let content =
-            build_template_content(Some("blank"), Some("gpt-5.1"), Some("high"), None);
+        let content = build_template_content(Some("blank"), Some("gpt-5.1"), Some("high"), None);
         assert!(content.contains("model = \"gpt-5.1\""));
         assert!(content.contains("model_reasoning_effort = \"high\""));
     }

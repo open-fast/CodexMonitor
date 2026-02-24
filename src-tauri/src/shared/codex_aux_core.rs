@@ -11,9 +11,10 @@ use crate::backend::app_server::{
     build_codex_command_with_bin, build_codex_path_env, check_codex_installation, WorkspaceSession,
 };
 use crate::shared::process_core::tokio_command;
-use crate::types::AppSettings;
+use crate::types::{AppSettings, WorkspaceEntry};
 
-const DEFAULT_COMMIT_MESSAGE_PROMPT: &str = "Generate a concise git commit message for the following changes. \
+const DEFAULT_COMMIT_MESSAGE_PROMPT: &str =
+    "Generate a concise git commit message for the following changes. \
 Follow conventional commit format (e.g., feat:, fix:, refactor:, docs:, etc.). \
 Keep the summary line under 72 characters. \
 Only output the commit message, nothing else.\n\n\
@@ -393,6 +394,7 @@ pub(crate) async fn codex_doctor_core(
 
 pub(crate) async fn run_background_prompt_core<F>(
     sessions: &Mutex<HashMap<String, Arc<WorkspaceSession>>>,
+    workspaces: &Mutex<HashMap<String, WorkspaceEntry>>,
     workspace_id: String,
     prompt: String,
     model: Option<&str>,
@@ -403,6 +405,11 @@ pub(crate) async fn run_background_prompt_core<F>(
 where
     F: Fn(&str, &str),
 {
+    let workspace_path = {
+        let workspaces = workspaces.lock().await;
+        let entry = workspaces.get(&workspace_id).ok_or("workspace not found")?;
+        entry.path.clone()
+    };
     let session = {
         let sessions = sessions.lock().await;
         sessions
@@ -412,10 +419,12 @@ where
     };
 
     let thread_params = json!({
-        "cwd": session.entry.path,
+        "cwd": workspace_path.clone(),
         "approvalPolicy": "never"
     });
-    let thread_result = session.send_request("thread/start", thread_params).await?;
+    let thread_result = session
+        .send_request_for_workspace(&workspace_id, "thread/start", thread_params)
+        .await?;
 
     if let Some(error) = thread_result.get("error") {
         let error_msg = error
@@ -456,14 +465,16 @@ where
     let mut turn_params = json!({
         "threadId": thread_id,
         "input": [{ "type": "text", "text": prompt }],
-        "cwd": session.entry.path,
+        "cwd": workspace_path,
         "approvalPolicy": "never",
         "sandboxPolicy": { "type": "readOnly" },
     });
     if let Some(model_id) = model {
         turn_params["model"] = json!(model_id);
     }
-    let turn_result = session.send_request("turn/start", turn_params).await;
+    let turn_result = session
+        .send_request_for_workspace(&workspace_id, "turn/start", turn_params)
+        .await;
     let turn_result = match turn_result {
         Ok(result) => result,
         Err(error) => {
@@ -472,7 +483,9 @@ where
                 callbacks.remove(&thread_id);
             }
             let archive_params = json!({ "threadId": thread_id.as_str() });
-            let _ = session.send_request("thread/archive", archive_params).await;
+            let _ = session
+                .send_request_for_workspace(&workspace_id, "thread/archive", archive_params)
+                .await;
             return Err(error);
         }
     };
@@ -487,7 +500,9 @@ where
             callbacks.remove(&thread_id);
         }
         let archive_params = json!({ "threadId": thread_id.as_str() });
-        let _ = session.send_request("thread/archive", archive_params).await;
+        let _ = session
+            .send_request_for_workspace(&workspace_id, "thread/archive", archive_params)
+            .await;
         return Err(error_msg.to_string());
     }
 
@@ -528,7 +543,9 @@ where
     }
 
     let archive_params = json!({ "threadId": thread_id });
-    let _ = session.send_request("thread/archive", archive_params).await;
+    let _ = session
+        .send_request_for_workspace(&workspace_id, "thread/archive", archive_params)
+        .await;
 
     match collect_result {
         Ok(Ok(())) => {}
@@ -546,6 +563,7 @@ where
 
 pub(crate) async fn generate_commit_message_core<F>(
     sessions: &Mutex<HashMap<String, Arc<WorkspaceSession>>>,
+    workspaces: &Mutex<HashMap<String, WorkspaceEntry>>,
     workspace_id: String,
     diff: &str,
     template: &str,
@@ -558,6 +576,7 @@ where
     let prompt = build_commit_message_prompt_for_diff(diff, template)?;
     run_background_prompt_core(
         sessions,
+        workspaces,
         workspace_id,
         prompt,
         model,
@@ -570,6 +589,7 @@ where
 
 pub(crate) async fn generate_run_metadata_core<F>(
     sessions: &Mutex<HashMap<String, Arc<WorkspaceSession>>>,
+    workspaces: &Mutex<HashMap<String, WorkspaceEntry>>,
     workspace_id: String,
     prompt: &str,
     on_hide_thread: F,
@@ -585,6 +605,7 @@ where
     let metadata_prompt = build_run_metadata_prompt(cleaned_prompt);
     let response = run_background_prompt_core(
         sessions,
+        workspaces,
         workspace_id,
         metadata_prompt,
         None,
@@ -599,6 +620,7 @@ where
 
 pub(crate) async fn generate_agent_description_core<F>(
     sessions: &Mutex<HashMap<String, Arc<WorkspaceSession>>>,
+    workspaces: &Mutex<HashMap<String, WorkspaceEntry>>,
     workspace_id: String,
     description: &str,
     on_hide_thread: F,
@@ -614,6 +636,7 @@ where
     let prompt = build_agent_description_prompt(cleaned_description);
     let response = run_background_prompt_core(
         sessions,
+        workspaces,
         workspace_id,
         prompt,
         None,
@@ -629,7 +652,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        build_commit_message_prompt_for_diff, parse_agent_description_value, parse_run_metadata_value,
+        build_commit_message_prompt_for_diff, parse_agent_description_value,
+        parse_run_metadata_value,
     };
 
     #[test]
@@ -643,7 +667,8 @@ mod tests {
 
     #[test]
     fn parse_run_metadata_value_normalizes_worktree_name_alias() {
-        let raw = r#"{"title":"Fix Login Redirect Loop","worktree_name":"fix-login-redirect-loop"}"#;
+        let raw =
+            r#"{"title":"Fix Login Redirect Loop","worktree_name":"fix-login-redirect-loop"}"#;
         let parsed = parse_run_metadata_value(raw).expect("parse metadata");
         assert_eq!(parsed["title"], "Fix Login Redirect Loop");
         assert_eq!(parsed["worktreeName"], "fix/login-redirect-loop");

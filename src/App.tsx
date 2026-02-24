@@ -32,6 +32,7 @@ import "./styles/tabbar.css";
 import "./styles/worktree-modal.css";
 import "./styles/clone-modal.css";
 import "./styles/workspace-from-url-modal.css";
+import "./styles/mobile-remote-workspace-modal.css";
 import "./styles/branch-switcher-modal.css";
 import "./styles/git-init-modal.css";
 import "./styles/settings.css";
@@ -206,7 +207,12 @@ function MainApp() {
     clearDebugEntries,
     shouldReduceTransparency,
   } = useAppBootstrapOrchestration();
-  const { threadListSortKey, setThreadListSortKey } = useThreadListSortKey();
+  const {
+    threadListSortKey,
+    setThreadListSortKey,
+    threadListOrganizeMode,
+    setThreadListOrganizeMode,
+  } = useThreadListSortKey();
   const [activeTab, setActiveTab] = useState<
     "home" | "projects" | "codex" | "git" | "log"
   >("codex");
@@ -226,12 +232,15 @@ function MainApp() {
     addWorkspaceFromPath,
     addWorkspaceFromGitUrl,
     addWorkspacesFromPaths,
+    mobileRemoteWorkspacePathPrompt,
+    updateMobileRemoteWorkspacePathInput,
+    cancelMobileRemoteWorkspacePathPrompt,
+    submitMobileRemoteWorkspacePathPrompt,
     addCloneAgent,
     addWorktreeAgent,
     connectWorkspace,
     markWorkspaceConnected,
     updateWorkspaceSettings,
-    updateWorkspaceCodexBin,
     createWorkspaceGroup,
     renameWorkspaceGroup,
     moveWorkspaceGroup,
@@ -513,14 +522,53 @@ function MainApp() {
   } = useCustomPrompts({ activeWorkspace, onDebug: addDebugEntry });
   const resolvedModel = selectedModel?.model ?? null;
   const resolvedEffort = reasoningSupported ? selectedEffort : null;
+
+  const handleThreadCodexMetadataDetected = useCallback(
+    (
+      workspaceId: string,
+      threadId: string,
+      metadata: { modelId: string | null; effort: string | null },
+    ) => {
+      if (!workspaceId || !threadId) {
+        return;
+      }
+      const modelId =
+        typeof metadata.modelId === "string" && metadata.modelId.trim().length > 0
+          ? metadata.modelId.trim()
+          : null;
+      const effort =
+        typeof metadata.effort === "string" && metadata.effort.trim().length > 0
+          ? metadata.effort.trim().toLowerCase()
+          : null;
+      if (!modelId && !effort) {
+        return;
+      }
+
+      const current = getThreadCodexParams(workspaceId, threadId);
+      const patch: {
+        modelId?: string | null;
+        effort?: string | null;
+      } = {};
+      if (modelId && !current?.modelId) {
+        patch.modelId = modelId;
+      }
+      if (effort && !current?.effort) {
+        patch.effort = effort;
+      }
+      if (Object.keys(patch).length === 0) {
+        return;
+      }
+      patchThreadCodexParams(workspaceId, threadId, patch);
+    },
+    [getThreadCodexParams, patchThreadCodexParams],
+  );
   const codexArgsOptions = useMemo(
     () =>
       buildCodexArgsOptions({
         appCodexArgs: appSettings.codexArgs ?? null,
-        workspaceCodexArgs: workspaces.map((workspace) => workspace.settings.codexArgs),
         additionalCodexArgs: [selectedCodexArgsOverride],
       }),
-    [appSettings.codexArgs, selectedCodexArgsOverride, workspaces],
+    [appSettings.codexArgs, selectedCodexArgsOverride],
   );
   const ensureWorkspaceRuntimeCodexArgs = useCallback(
     async (workspaceId: string, threadId: string | null) => {
@@ -552,6 +600,7 @@ function MainApp() {
 
   const {
     setActiveThreadId,
+    hasLocalThreadSnapshot,
     activeThreadId,
     activeItems,
     approvals,
@@ -579,6 +628,7 @@ function MainApp() {
     getPinTimestamp,
     renameThread,
     startThreadForWorkspace,
+    listThreadsForWorkspaces,
     listThreadsForWorkspace,
     loadOlderThreadsForWorkspace,
     resetWorkspaceThreads,
@@ -587,6 +637,7 @@ function MainApp() {
     sendUserMessageToThread,
     startFork,
     startReview,
+    startUncommittedReview,
     startResume,
     startCompact,
     startApps,
@@ -634,12 +685,14 @@ function MainApp() {
     customPrompts: prompts,
     onMessageActivity: handleThreadMessageActivity,
     threadSortKey: threadListSortKey,
+    onThreadCodexMetadataDetected: handleThreadCodexMetadataDetected,
   });
   const { connectionState: remoteThreadConnectionState, reconnectLive } =
     useRemoteThreadLiveConnection({
       backendMode: appSettings.backendMode,
       activeWorkspace,
       activeThreadId,
+      activeThreadHasLocalSnapshot: hasLocalThreadSnapshot(activeThreadId),
       activeThreadIsProcessing: Boolean(
         activeThreadId && threadStatusById[activeThreadId]?.isProcessing,
       ),
@@ -936,7 +989,8 @@ function MainApp() {
       threadListSortKey,
       setThreadListSortKey,
       workspaces,
-      listThreadsForWorkspace,
+      refreshWorkspaces,
+      listThreadsForWorkspaces,
       resetWorkspaceThreads,
     });
 
@@ -1346,6 +1400,7 @@ function MainApp() {
   const activeTurnId = activeThreadId
     ? activeTurnIdByThread[activeThreadId] ?? null
     : null;
+  const steerAvailable = appSettings.steerEnabled && Boolean(activeTurnId);
   const hasUserInputRequestForActiveThread = Boolean(
     activeThreadId &&
       userInputRequests.some(
@@ -1391,7 +1446,6 @@ function MainApp() {
     removeImagesForThread,
     activeQueue,
     handleSend,
-    queueMessage,
     prefillDraft,
     setPrefillDraft,
     composerInsert,
@@ -1411,6 +1465,7 @@ function MainApp() {
     isReviewing,
     queueFlushPaused,
     steerEnabled: appSettings.steerEnabled,
+    followUpMessageBehavior: appSettings.followUpMessageBehavior,
     appsEnabled: appSettings.experimentalAppsEnabled,
     connectWorkspace,
     startThreadForWorkspace,
@@ -1689,12 +1744,12 @@ function MainApp() {
     workspaces,
     hasLoaded,
     connectWorkspace,
-    listThreadsForWorkspace
+    listThreadsForWorkspaces,
   });
   useWorkspaceRefreshOnFocus({
     workspaces,
     refreshWorkspaces,
-    listThreadsForWorkspace,
+    listThreadsForWorkspaces,
     backendMode: appSettings.backendMode,
     pollIntervalMs: REMOTE_WORKSPACE_REFRESH_INTERVAL_MS,
   });
@@ -1790,7 +1845,6 @@ function MainApp() {
     composerContextActions,
     composerSendLabel,
     handleComposerSend,
-    handleComposerQueue,
   } = usePullRequestComposer({
     activeWorkspace,
     selectedPullRequest,
@@ -1810,12 +1864,10 @@ function MainApp() {
     runPullRequestReview,
     clearActiveImages,
     handleSend,
-    queueMessage,
   });
 
   const {
     handleComposerSendWithDraftStart,
-    handleComposerQueueWithDraftStart,
     handleSelectWorkspaceInstance,
     handleOpenThreadLink,
     handleArchiveActiveThread,
@@ -1828,7 +1880,6 @@ function MainApp() {
     pendingNewThreadSeedRef,
     runWithDraftStart,
     handleComposerSend,
-    handleComposerQueue,
     clearDraftState,
     exitDiffView,
     resetPullRequestSelection,
@@ -2027,6 +2078,8 @@ function MainApp() {
     pinnedThreadsVersion,
     threadListSortKey,
     onSetThreadListSortKey: handleSetThreadListSortKey,
+    threadListOrganizeMode,
+    onSetThreadListOrganizeMode: setThreadListOrganizeMode,
     onRefreshAllThreads: handleRefreshAllWorkspaceThreads,
     activeWorkspaceId,
     activeThreadId,
@@ -2264,6 +2317,7 @@ function MainApp() {
     onUnstageGitFile: handleUnstageGitFile,
     onRevertGitFile: handleRevertGitFile,
     onRevertAllGitChanges: handleRevertAllGitChanges,
+    onReviewUncommittedChanges: startUncommittedReview,
     gitDiffs: activeDiffs,
     gitDiffLoading: activeDiffLoading,
     gitDiffError: activeDiffError,
@@ -2301,13 +2355,14 @@ function MainApp() {
     onRevealGeneralPrompts: handleRevealGeneralPrompts,
     canRevealGeneralPrompts: Boolean(activeWorkspace),
     onSend: handleComposerSendWithDraftStart,
-    onQueue: handleComposerQueueWithDraftStart,
     onStop: interruptTurn,
     canStop: canInterrupt,
     onFileAutocompleteActiveChange: setFileAutocompleteActive,
     isReviewing,
     isProcessing,
-    steerEnabled: appSettings.steerEnabled,
+    steerAvailable,
+    followUpMessageBehavior: appSettings.followUpMessageBehavior,
+    composerFollowUpHintEnabled: appSettings.composerFollowUpHintEnabled,
     reviewPrompt,
     onReviewPromptClose: closeReviewPrompt,
     onReviewPromptShowPreset: showPresetStep,
@@ -2645,6 +2700,10 @@ function MainApp() {
         onWorkspaceFromUrlPromptClearDestinationPath={clearWorkspaceFromUrlDestinationPath}
         onWorkspaceFromUrlPromptCancel={closeWorkspaceFromUrlPrompt}
         onWorkspaceFromUrlPromptConfirm={submitWorkspaceFromUrlPrompt}
+        mobileRemoteWorkspacePathPrompt={mobileRemoteWorkspacePathPrompt}
+        onMobileRemoteWorkspacePathPromptChange={updateMobileRemoteWorkspacePathInput}
+        onMobileRemoteWorkspacePathPromptCancel={cancelMobileRemoteWorkspacePathPrompt}
+        onMobileRemoteWorkspacePathPromptConfirm={submitMobileRemoteWorkspacePathPrompt}
         branchSwitcher={branchSwitcher}
         branches={branches}
         workspaces={workspaces}
@@ -2678,9 +2737,6 @@ function MainApp() {
           },
           onRunDoctor: doctor,
           onRunCodexUpdate: codexUpdate,
-          onUpdateWorkspaceCodexBin: async (id, codexBin) => {
-            await updateWorkspaceCodexBin(id, codexBin);
-          },
           onUpdateWorkspaceSettings: async (id, settings) => {
             await updateWorkspaceSettings(id, settings);
           },
