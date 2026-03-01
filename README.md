@@ -229,6 +229,7 @@ npm run tauri:build:mac:intel
 ```
 
 Artifacts will be in `src-tauri/target/x86_64-apple-darwin/release/bundle/`.
+The Intel build preflight now auto-cleans stale Rust cache entries when the local `rustc` toolchain changes.
 
 For PR validation without generating installer bundles:
 
