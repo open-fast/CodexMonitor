@@ -1,5 +1,7 @@
 import { asString } from "./threadNormalize";
 
+const SIDEBAR_HIDDEN_SUBAGENT_KINDS = new Set(["memory_consolidation"]);
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object") {
     return null;
@@ -7,12 +9,102 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function normalizeSubagentKind(value: string): string {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]/g, "_");
+  if (normalized.startsWith("subagent_")) {
+    return normalized.slice("subagent_".length);
+  }
+  if (normalized.startsWith("sub_agent_")) {
+    return normalized.slice("sub_agent_".length);
+  }
+  return normalized;
+}
+
+function getSubagentKind(source: unknown): string | null {
+  if (typeof source === "string") {
+    const normalized = normalizeSubagentKind(source);
+    return normalized || null;
+  }
+
+  const sourceRecord = asRecord(source);
+  if (!sourceRecord) {
+    return null;
+  }
+
+  const subAgentRaw =
+    sourceRecord.subAgent ?? sourceRecord.sub_agent ?? sourceRecord.subagent;
+  if (typeof subAgentRaw === "string") {
+    const normalized = normalizeSubagentKind(subAgentRaw);
+    return normalized || null;
+  }
+
+  const subAgentRecord = asRecord(subAgentRaw);
+  if (!subAgentRecord) {
+    return null;
+  }
+
+  const explicitKind = asString(
+    subAgentRecord.kind ??
+      subAgentRecord.type ??
+      subAgentRecord.name ??
+      subAgentRecord.id,
+  );
+  if (explicitKind) {
+    const normalized = normalizeSubagentKind(explicitKind);
+    return normalized || null;
+  }
+
+  const candidateKeys = Object.keys(subAgentRecord).filter(
+    (key) => key !== "thread_spawn" && key !== "threadSpawn",
+  );
+  if (candidateKeys.length !== 1) {
+    return null;
+  }
+  const normalized = normalizeSubagentKind(candidateKeys[0] ?? "");
+  return normalized || null;
+}
+
+export function isSubagentThreadSource(source: unknown): boolean {
+  if (typeof source === "string") {
+    const normalized = source.trim().toLowerCase();
+    return normalized.startsWith("subagent") || normalized.startsWith("sub_agent");
+  }
+
+  const sourceRecord = asRecord(source);
+  if (!sourceRecord) {
+    return false;
+  }
+
+  const subAgent =
+    sourceRecord.subAgent ?? sourceRecord.sub_agent ?? sourceRecord.subagent;
+  if (subAgent === null || subAgent === undefined) {
+    return false;
+  }
+  if (typeof subAgent === "string") {
+    return subAgent.trim().length > 0;
+  }
+  return typeof subAgent === "object";
+}
+
+export function shouldHideSubagentThreadFromSidebar(source: unknown): boolean {
+  const subagentKind = getSubagentKind(source);
+  if (!subagentKind) {
+    return false;
+  }
+  return SIDEBAR_HIDDEN_SUBAGENT_KINDS.has(subagentKind);
+}
+
 export function getParentThreadIdFromSource(source: unknown): string | null {
   const sourceRecord = asRecord(source);
   if (!sourceRecord) {
     return null;
   }
-  const subAgent = asRecord(sourceRecord.subAgent ?? sourceRecord.sub_agent);
+  const subAgent = asRecord(
+    sourceRecord.subAgent ?? sourceRecord.sub_agent ?? sourceRecord.subagent,
+  );
   if (!subAgent) {
     return null;
   }
@@ -24,6 +116,46 @@ export function getParentThreadIdFromSource(source: unknown): string | null {
     threadSpawn.parent_thread_id ?? threadSpawn.parentThreadId,
   );
   return parentId || null;
+}
+
+export function getParentThreadIdFromThread(
+  thread: Record<string, unknown>,
+): string | null {
+  const sourceParentId = getParentThreadIdFromSource(thread.source);
+  if (sourceParentId) {
+    return sourceParentId;
+  }
+  const directParentId = asString(
+    thread.parentThreadId ??
+      thread.parent_thread_id ??
+      thread.parentId ??
+      thread.parent_id ??
+      thread.senderThreadId ??
+      thread.sender_thread_id,
+  );
+  if (directParentId) {
+    return directParentId;
+  }
+  const spawnRaw =
+    thread.threadSpawn ??
+    thread.thread_spawn ??
+    thread.spawn ??
+    thread.subAgent ??
+    thread.subagent;
+  const spawn =
+    spawnRaw && typeof spawnRaw === "object"
+      ? (spawnRaw as Record<string, unknown>)
+      : null;
+  if (!spawn) {
+    return null;
+  }
+  const spawnParentId = asString(
+    spawn.parentThreadId ??
+      spawn.parent_thread_id ??
+      spawn.parentId ??
+      spawn.parent_id,
+  );
+  return spawnParentId || null;
 }
 
 export type ResumedTurnState = {

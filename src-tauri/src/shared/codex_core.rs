@@ -241,9 +241,21 @@ pub(crate) async fn list_threads_core(
         "cursor": cursor,
         "limit": limit,
         "sortKey": sort_key,
-        // Keep spawned sub-agent sessions visible in thread/list so UI refreshes
-        // do not drop parent -> child sidebar relationships.
-        "sourceKinds": ["cli", "vscode", "subAgentThreadSpawn"]
+        // Keep interactive and sub-agent sessions visible across CLI versions so
+        // thread/list refreshes do not drop valid historical conversations.
+        "sourceKinds": [
+            "cli",
+            "vscode",
+            "appServer",
+            // Intentionally exclude generic "subAgent" to avoid pulling
+            // parentless internal sessions (for example memory consolidation).
+            // Keep only explicit parent-linked sub-agent kinds so internal
+            // background jobs (for example memory consolidation) stay hidden.
+            "subAgentReview",
+            "subAgentCompact",
+            "subAgentThreadSpawn",
+            "unknown"
+        ]
     });
     session
         .send_request_for_workspace(&workspace_id, "thread/list", params)
@@ -686,10 +698,35 @@ pub(crate) async fn skills_list_core(
 ) -> Result<Value, String> {
     let session = get_session_clone(sessions, &workspace_id).await?;
     let workspace_path = resolve_workspace_path_core(workspaces, &workspace_id).await?;
-    let params = json!({ "cwd": workspace_path });
-    session
+
+    // Codex can discover project-scoped skills from `<workspace>/.agents/skills`.
+    // Some environments don't surface those reliably in CodexMonitor unless we
+    // pass the default project skills path explicitly.
+    let mut source_paths: Vec<String> = vec![];
+    let project_skills_dir = Path::new(&workspace_path).join(".agents").join("skills");
+    if project_skills_dir.is_dir() {
+        if let Some(p) = project_skills_dir.to_str() {
+            source_paths.push(p.to_string());
+        }
+    }
+
+    let params = if source_paths.is_empty() {
+        json!({ "cwd": workspace_path })
+    } else {
+        json!({ "cwd": workspace_path, "skillsPaths": source_paths })
+    };
+
+    let mut response = session
         .send_request_for_workspace(&workspace_id, "skills/list", params)
-        .await
+        .await?;
+
+    // Attach diagnostics for the UI (non-breaking: keep original response fields).
+    if let Value::Object(ref mut obj) = response {
+        obj.insert("sourcePaths".to_string(), json!(source_paths));
+        obj.insert("sourceErrors".to_string(), json!([]));
+    }
+
+    Ok(response)
 }
 
 pub(crate) async fn apps_list_core(
