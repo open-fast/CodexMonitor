@@ -62,6 +62,24 @@ export type AppServerEvent = {
   message: Record<string, unknown>;
 };
 
+export type TrayRecentThreadEntry = {
+  workspaceId: string;
+  workspaceLabel: string;
+  threadId: string;
+  threadLabel: string;
+  updatedAt: number;
+};
+
+export type TraySessionUsage = {
+  sessionLabel: string;
+  weeklyLabel: string | null;
+};
+
+export type TrayOpenThreadPayload = {
+  workspaceId: string;
+  threadId: string;
+};
+
 export type Message = {
   id: string;
   role: "user" | "assistant";
@@ -85,6 +103,17 @@ export type ConversationItem =
       role: "user" | "assistant";
       text: string;
       images?: string[];
+    }
+  | {
+      id: string;
+      kind: "userInput";
+      status: "answered";
+      questions: {
+        id: string;
+        header: string;
+        question: string;
+        answers: string[];
+      }[];
     }
   | { id: string; kind: "reasoning"; summary: string; content: string }
   | { id: string; kind: "diff"; title: string; diff: string; status?: string }
